@@ -1,0 +1,3 @@
+**Burn Assessment using Decision-Level Fusion with Attention Mechanisms**
+
+This repository contains the implementation of a burn assessment model using decision-level fusion with attention mechanisms. The model utilizes three Convolutional Neural Network (CNN) models integrated with channel attention and self-attention mechanisms. The models are combined using majority voting and weighted voting, with weights optimized through grid search.
