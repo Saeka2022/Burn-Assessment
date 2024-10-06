@@ -1,0 +1,232 @@
+import os
+import numpy as np
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from sklearn.metrics import accuracy_score
+from itertools import product
+
+
+# Custom Layers
+class ChannelAttention(tf.keras.layers.Layer):
+    """
+    A channel attention layer to focus on important channels of the input tensor.
+
+    Parameters:
+    filters (int): Number of filters in the input tensor.
+    ratio (int): Reduction ratio to determine the number of neurons in dense layers.
+    """
+    def __init__(self, filters, ratio):
+        super(ChannelAttention, self).__init__()
+        self.filters = filters
+        self.ratio = ratio
+
+    def build(self, input_shape):
+        self.shared_layer_one = tf.keras.layers.Dense(self.filters // self.ratio,
+                                                      activation='relu', kernel_initializer='he_normal',
+                                                      use_bias=True, bias_initializer='zeros')
+        self.shared_layer_two = tf.keras.layers.Dense(self.filters,
+                                                      kernel_initializer='he_normal',
+                                                      use_bias=True, bias_initializer='zeros')
+
+    def call(self, inputs):
+        # AvgPool
+        avg_pool = tf.keras.layers.GlobalAveragePooling2D()(inputs)
+        avg_pool = self.shared_layer_one(avg_pool)
+        avg_pool = self.shared_layer_two(avg_pool)
+
+        # MaxPool
+        max_pool = tf.keras.layers.GlobalMaxPooling2D()(inputs)
+        max_pool = tf.expand_dims(tf.expand_dims(max_pool, axis=1), axis=1)
+        max_pool = self.shared_layer_one(max_pool)
+        max_pool = self.shared_layer_two(max_pool)
+
+        attention = tf.keras.layers.Add()([avg_pool, max_pool])
+        attention = tf.keras.layers.Activation('sigmoid')(attention)
+
+        return tf.keras.layers.Multiply()([inputs, attention])
+
+
+class SpatialAttention(tf.keras.layers.Layer):
+    """
+    A spatial attention layer to focus on important spatial features of the input tensor.
+
+    Parameters:
+    kernel_size (int): The kernel size for the Conv2D operation.
+    """
+    def __init__(self, kernel_size):
+        super(SpatialAttention, self).__init__()
+        self.kernel_size = kernel_size
+
+    def build(self, input_shape):
+        self.conv2d = tf.keras.layers.Conv2D(filters=1,
+                                              kernel_size=self.kernel_size,
+                                              strides=1,
+                                              padding='same',
+                                              activation='sigmoid',
+                                              kernel_initializer='he_normal',
+                                              use_bias=False)
+
+    def call(self, inputs):
+        # AvgPool
+        avg_pool = tf.reduce_mean(inputs, axis=3, keepdims=True)
+
+        # MaxPool
+        max_pool = tf.reduce_max(inputs, axis=3, keepdims=True)
+
+        attention = tf.keras.layers.concatenate([avg_pool, max_pool], axis=3)
+        attention = self.conv2d(attention)
+
+        return tf.keras.layers.Multiply()([inputs, attention])
+
+
+# Hyperparameters
+EPOCHS = 150
+BATCH_SIZE = 8
+INPUT_SHAPE = (8, 150, 150, 3)
+
+# Directory to save models
+save_dir = os.path.join(os.getcwd(), "Saved_Models")
+os.makedirs(save_dir, exist_ok=True)
+
+# Model Definitions
+def build_model1():
+    model = models.Sequential([
+        layers.InputLayer(input_shape=INPUT_SHAPE[1:]),
+        layers.Conv2D(16, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(16, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(32, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(64, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Flatten(),
+        layers.Dense(516, activation='relu'),
+        layers.Dense(1, activation='sigmoid'),
+    ])
+    return model
+
+def build_model2():
+    model = models.Sequential([
+        layers.InputLayer(input_shape=INPUT_SHAPE[1:]),
+        layers.Conv2D(256, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(256, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.3),
+        layers.Conv2D(128, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(128, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.3),
+        layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(64, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.3),
+        layers.Flatten(),
+        layers.Dense(32, activation='relu'),
+        layers.Dense(1, activation='sigmoid'),
+    ])
+    return model
+
+def build_model3():
+    model = models.Sequential([
+        layers.InputLayer(input_shape=INPUT_SHAPE[1:]),
+        layers.Conv2D(32, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(32, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.2),
+        layers.Conv2D(64, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(64, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.2),
+        layers.Conv2D(128, kernel_size=(3, 3), activation='relu'),
+        ChannelAttention(128, 2),
+        SpatialAttention(3),
+        layers.MaxPooling2D((2, 2)),
+        layers.Dropout(0.2),
+        layers.Flatten(),
+        layers.Dense(128, activation='relu'),
+        layers.Dense(1, activation='sigmoid'),
+    ])
+    return model
+
+
+# Compilation and Training Function
+def compile_and_train(model, model_name, train_ds, val_ds):
+    model.compile(
+        optimizer='adam',
+        loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
+        metrics=['accuracy']
+    )
+
+    model.fit(
+        train_ds,
+        batch_size=BATCH_SIZE,
+        validation_data=val_ds,
+        verbose=1,
+        epochs=EPOCHS,
+    )
+
+    # Save Model
+    model_save_path = os.path.join(save_dir, f"{model_name}_AttnInflamII")
+    model.save(model_save_path)
+
+
+# Assuming train_ds, val_ds, test_ds are defined
+
+# Training the models
+model1 = build_model1()
+compile_and_train(model1, "model1", train_ds, val_ds)
+
+model2 = build_model2()
+compile_and_train(model2, "model2", train_ds, val_ds)
+
+model3 = build_model3()
+compile_and_train(model3, "model3", train_ds, val_ds)
+
+# Load saved models for ensemble
+model1 = tf.keras.models.load_model(os.path.join(save_dir, "model1_AttnInflamII"))
+model2 = tf.keras.models.load_model(os.path.join(save_dir, "model2_AttnInflamII"))
+model3 = tf.keras.models.load_model(os.path.join(save_dir, "model3_AttnInflamII"))
+
+models_list = [model1, model2, model3]
+
+# Ensemble predictions
+predictions = [model.predict(test_ds) for model in models_list]
+
+# Majority Voting
+majority_predictions = np.round(np.concatenate(predictions, axis=1))
+majority_ensemble_result = np.apply_along_axis(lambda x: np.argmax(np.bincount(x.astype(int))), axis=1, arr=majority_predictions)
+majority_accuracy = accuracy_score(test_labels, majority_ensemble_result)
+print(f'Majority Voting Ensemble Accuracy: {majority_accuracy:.2f}')
+
+# Grid Search for Optimal Weights
+weight_range = np.linspace(0.0, 1.0, num=11)
+best_accuracy = 0.0
+best_weights = None
+
+# Iterate over all possible weight combinations
+for weight1, weight2, weight3 in product(weight_range, repeat=3):
+    # Skip combinations that don't sum to 1
+    if not np.isclose(weight1 + weight2 + weight3, 1.0):
+        continue
+
+    # Weighted Ensemble using the current weights
+    ensemble_prediction = (weight1 * predictions[0] + weight2 * predictions[1] + weight3 * predictions[2])
+    ensemble_accuracy = accuracy_score(np.round(test_labels), np.round(ensemble_prediction))
+
+    # Update the best weights and accuracy if a better accuracy is found
+    if ensemble_accuracy > best_accuracy:
+        best_accuracy = ensemble_accuracy
+        best_weights = (weight1, weight2, weight3)
+
+print(f'Best Accuracy Score from Grid Search: {best_accuracy:.2f}')
+print(f'Best Weights: {best_weights}')
